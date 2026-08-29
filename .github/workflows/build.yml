@@ -75,14 +75,23 @@ jobs:
         with: { node-version: 24 }
 
       # As dependências mínimas para rodar os testes contra o TypeScript real.
+      # ⚠️ O nome do pacote e @chatbotx.io/integration-instagram (nao "instagram").
+      #    Errar o filtro faz o pnpm nao instalar o que importa e o teste morrer
+      #    sem zod — foi exatamente o que derrubou a primeira execucao.
       - name: Preparar os testes
         run: |
-          cd ChatbotX && pnpm install --frozen-lockfile --filter "@chatbotx.io/instagram..." || pnpm install --frozen-lockfile
+          cd ChatbotX
+          pnpm install --frozen-lockfile --filter "@chatbotx.io/integration-instagram..."
           npm install -g tsx
+          echo "-- zod resolvido? --"
+          ls -d integrations/instagram/node_modules/zod 2>/dev/null             || ls -d node_modules/zod 2>/dev/null             || { echo "::error::zod nao foi instalado — o teste morreria sem dizer por que"; exit 1; }
 
-      # ⚠️ O aceite roda contra o CÓDIGO REAL corrigido, não contra uma cópia.
+      # O aceite roda contra o CODIGO REAL corrigido, de DENTRO do pacote — e la
+      # que `zod` resolve, porque ele e dependencia daquele pacote e nao da raiz.
       - name: Aceite — 12 casos, inclusive os de lote
-        run: cd controlador && tsx schema-tests.mjs
+        run: |
+          cp controlador/schema-tests.mjs ChatbotX/integrations/instagram/schema-tests.mjs
+          cd ChatbotX/integrations/instagram && tsx schema-tests.mjs
 
       - name: Entrar no registro de imagens
         uses: docker/login-action@v3
