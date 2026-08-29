@@ -78,6 +78,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # ⚠️ A missing label makes `gh issue create --label` fail outright, so the
+          #    alert dies at the exact moment it matters. The synthetic down test
+          #    caught this. Idempotent: silent when the label already exists.
+          gh label create watchdog --repo "$GITHUB_REPOSITORY" \
+            --description "External watchdog alerts" --color B60205 2>/dev/null || true
+
           EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" \
             --label watchdog --state open --limit 1 --json number --jq '.[0].number // empty')
 
