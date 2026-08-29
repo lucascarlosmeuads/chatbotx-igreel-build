@@ -8,7 +8,11 @@
 //  ⛔ Fixtures inteiramente inventadas. ⛔ Nenhum dado real de ninguém.
 //  Uso no runner:  npx tsx schema-tests.mjs
 // ════════════════════════════════════════════════════════════════════════════
-import { instagramWebhookEventSchema as SCHEMA } from "../ChatbotX/integrations/instagram/src/schemas.ts";
+// ⚠️ Este arquivo e COPIADO para dentro de integrations/instagram/ antes de rodar.
+//    Motivo: `zod` e dependencia DAQUELE pacote (@chatbotx.io/integration-instagram),
+//    entao a resolucao de modulo so funciona a partir de la. Rodar de fora da
+//    arvore do pacote quebra com ERR_MODULE_NOT_FOUND, mesmo com o patch correto.
+import { instagramWebhookEventSchema as SCHEMA } from "./src/schemas.ts";
 
 const CONTA = "17800000000000000";
 const P1 = "61300000000000";
