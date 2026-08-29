@@ -1,0 +1,83 @@
+Subject: [PATCH] fix(instagram,messenger): accept ig_reel and degrade unknown attachment types
+
+Minimal cherry-pick of the attachmentTypeSchema hunk from upstream 4caf7e8 (PR #1053),
+applied on top of 064ff2d305c6e76404562db372ee40bce75aae8e.
+
+Nothing else from that PR is included: no private-reply feature, no is_deleted, no
+reply_to.story, no referral/postback changes, no reaction schema.
+
+Rationale: on the base revision, an Instagram DM carrying attachments[].type = "ig_reel"
+fails schema validation, and the handler does `return void` on failure — discarding the
+entire webhook POST. Because Meta batches multiple messaging events per POST, one
+unrecognised type drops every message in that batch, including unrelated text messages.
+
+diff --git a/integrations/instagram/src/schemas.ts b/integrations/instagram/src/schemas.ts
+--- a/integrations/instagram/src/schemas.ts
++++ b/integrations/instagram/src/schemas.ts
+@@ -28,16 +28,22 @@ export type InstagramActions = {
+ }
+
+ // Common attachment types — includes all types Instagram may send in a webhook
+-const attachmentTypeSchema = z.enum([
+-  "image",
+-  "video",
+-  "audio",
+-  "file",
+-  "sticker",
+-  "location",
+-  "share",
+-  "fallback",
+-])
++const attachmentTypeSchema = z
++  .enum([
++    "image",
++    "video",
++    "audio",
++    "file",
++    "sticker",
++    "location",
++    "share",
++    "fallback",
++    "story_mention",
++    "ig_reel",
++    "reel",
++    "template",
++  ])
++  .catch("fallback")
+
+ // Base attachment payload — url optional because location/share have no url
+ const baseAttachmentPayloadSchema = z.object({
+diff --git a/integrations/messenger/src/schema.ts b/integrations/messenger/src/schema.ts
+--- a/integrations/messenger/src/schema.ts
++++ b/integrations/messenger/src/schema.ts
+@@ -85,17 +85,19 @@ export type MessengerActions<
+ }
+
+ // Common attachment types — includes all types Facebook may send in a webhook
+-const attachmentTypeSchema = z.enum([
+-  "image",
+-  "video",
+-  "audio",
+-  "file",
+-  "template",
+-  "sticker",
+-  "location",
+-  "share",
+-  "fallback",
+-])
++const attachmentTypeSchema = z
++  .enum([
++    "image",
++    "video",
++    "audio",
++    "file",
++    "template",
++    "sticker",
++    "location",
++    "share",
++    "fallback",
++  ])
++  .catch("fallback")
+
+ // Base attachment payload — url optional because template attachments have no url
+ const baseAttachmentPayloadSchema = z.object({

@@ -1,0 +1,128 @@
+name: build-chatbotx-builder-igreel-fix
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Reconstrói a MESMA revisão que já roda em produção, mais UM patch mínimo,
+#  e publica a imagem com um digest imutável.
+#
+#  Por que ele existe: a revisão em produção descarta mensagens de Instagram
+#  que trazem anexo do tipo ig_reel — o payload inteiro é rejeitado e o handler
+#  faz `return void`. O upstream corrigiu em 4caf7e8 (PR #1053), mas o conserto
+#  ainda não saiu em versão marcada. Aqui pegamos SÓ aquele pedaço.
+#
+#  ⛔ Nenhum segredo de produção é usado. ⛔ Nenhum runner pago.
+# ════════════════════════════════════════════════════════════════════════════
+
+on:
+  workflow_dispatch:        # só roda quando alguém clicar. ⛔ nada automático.
+
+permissions:
+  contents: read            # o mínimo: ler este repositório
+  packages: write           # o mínimo: publicar a imagem
+
+env:
+  BASE_REV: 064ff2d305c6e76404562db372ee40bce75aae8e
+  PATCH_SRC: 4caf7e8
+  TAG: prod-2026-08-28-ig-reel-fix
+
+jobs:
+  build:
+    runs-on: ubuntu-latest  # ⛔ runner padrão, gratuito em repositório público
+
+    steps:
+      - name: Este repositório (patch + testes)
+        uses: actions/checkout@v4
+        with:
+          path: controlador
+
+      - name: O ChatbotX, na revisão EXATA que roda em produção
+        uses: actions/checkout@v4
+        with:
+          repository: ChatbotXIO/ChatbotX
+          ref: ${{ env.BASE_REV }}
+          path: ChatbotX
+
+      # ⚠️ Trava: se o checkout não vier na revisão exata, para aqui.
+      - name: Provar a revisão
+        working-directory: ChatbotX
+        run: |
+          ATUAL=$(git rev-parse HEAD)
+          echo "esperado: $BASE_REV"
+          echo "obtido..: $ATUAL"
+          [ "$ATUAL" = "$BASE_REV" ] || { echo "::error::revisão errada"; exit 1; }
+
+      # ⚠️ --check primeiro: patch que não aplica limpo derruba o build,
+      #    em vez de aplicar "mais ou menos".
+      - name: Aplicar o patch mínimo
+        working-directory: ChatbotX
+        run: |
+          git apply --check -v ../controlador/ig-reel-minimal.patch
+          git apply         ../controlador/ig-reel-minimal.patch
+
+      # 🔒 A trava mais importante: o patch NÃO pode ter tocado mais nada.
+      - name: Provar que só os dois schemas mudaram
+        working-directory: ChatbotX
+        run: |
+          echo "── diff completo ──"; git diff
+          MUDADOS=$(git diff --name-only | sort | tr '\n' ' ')
+          ESPERADO="integrations/instagram/src/schemas.ts integrations/messenger/src/schema.ts "
+          echo "mudados .: $MUDADOS"
+          echo "esperado : $ESPERADO"
+          [ "$MUDADOS" = "$ESPERADO" ] || { echo "::error::o patch tocou arquivo fora do escopo"; exit 1; }
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 10 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+
+      # As dependências mínimas para rodar os testes contra o TypeScript real.
+      - name: Preparar os testes
+        run: |
+          cd ChatbotX && pnpm install --frozen-lockfile --filter "@chatbotx.io/instagram..." || pnpm install --frozen-lockfile
+          npm install -g tsx
+
+      # ⚠️ O aceite roda contra o CÓDIGO REAL corrigido, não contra uma cópia.
+      - name: Aceite — 12 casos, inclusive os de lote
+        run: cd controlador && tsx schema-tests.mjs
+
+      - name: Entrar no registro de imagens
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # ⛔ temporário, morre com a execução
+
+      - name: Construir e publicar
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ChatbotX
+          file: ChatbotX/apps/builder/docker/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/chatbotx-builder:${{ env.TAG }}
+          labels: |
+            org.opencontainers.image.revision=${{ env.BASE_REV }}
+            org.opencontainers.image.source=https://github.com/ChatbotXIO/ChatbotX
+            io.chatbotx.minimal-patch=minimal ig_reel/attachment enum fix from upstream ${{ env.PATCH_SRC }}
+          provenance: false
+
+      # 🔒 O digest é a identidade que vai para produção. A etiqueta é só apelido.
+      - name: O digest — é ELE que se usa em produção
+        run: |
+          echo "════════════════════════════════════════════════════════"
+          echo "  REVISAO BASE : $BASE_REV"
+          echo "  PATCH        : upstream $PATCH_SRC (PR #1053)"
+          echo "  ETIQUETA     : ghcr.io/${{ github.repository_owner }}/chatbotx-builder:$TAG"
+          echo "  DIGEST       : ${{ steps.build.outputs.digest }}"
+          echo ""
+          echo "  Puxar na VPS PELO DIGEST, nunca pela etiqueta:"
+          echo "    ghcr.io/${{ github.repository_owner }}/chatbotx-builder@${{ steps.build.outputs.digest }}"
+          echo "════════════════════════════════════════════════════════"
+          {
+            echo "### Imagem publicada"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| revisão base | \`$BASE_REV\` |"
+            echo "| patch | upstream \`$PATCH_SRC\` (PR #1053) |"
+            echo "| digest | \`${{ steps.build.outputs.digest }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
