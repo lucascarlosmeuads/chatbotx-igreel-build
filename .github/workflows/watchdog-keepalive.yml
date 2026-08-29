@@ -1,0 +1,46 @@
+name: watchdog-keepalive
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Why this exists — it is not busywork.
+#
+#  GitHub disables scheduled workflows in a public repository after 60 days
+#  without repository activity. This repository is deliberately quiet: the patch
+#  it carries is finished, so months can pass with no commits. Left alone, the
+#  watchdog would switch itself off exactly when nobody was watching — a monitor
+#  that dies silently is worse than no monitor, because it looks like coverage.
+#
+#  So once a month this makes one small, honest commit whose only purpose is to
+#  keep the scheduler alive, and records when it ran.
+#
+#  ⚠️ Deliberately NOT run on every watchdog probe: that would be thousands of
+#     commits a year and would bury the repository's real history.
+#  ⛔ The file it writes carries a date and nothing else. No target, no
+#     infrastructure, no private data.
+# ════════════════════════════════════════════════════════════════════════════
+
+on:
+  schedule:
+    - cron: "13 4 3 * *"     # 03rd of each month — well inside the 60-day window
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Touch the keepalive marker
+        run: |
+          echo "last keepalive: $(date -u '+%Y-%m-%d %H:%M UTC')" > .watchdog-keepalive
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .watchdog-keepalive
+          if git diff --cached --quiet; then
+            echo "nothing changed — skipping commit"
+            exit 0
+          fi
+          git commit -m "chore: keepalive so the scheduled watchdog is not auto-disabled"
+          git push

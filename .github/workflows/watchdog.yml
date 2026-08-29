@@ -1,0 +1,118 @@
+name: external-watchdog
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Dead-man switch that lives OUTSIDE the monitored host.
+#
+#  The point: a dying machine cannot announce its own death. The host already
+#  alerts on internal problems (disk, memory, services) through its own channel,
+#  but that channel dies with the host. This watchdog runs on GitHub's
+#  infrastructure and notices silence from the outside.
+#
+#  🔒 The target lives in the WATCHDOG_URL secret and is never printed. Failure
+#     output is deliberately generic — this repository and its issues are public.
+# ════════════════════════════════════════════════════════════════════════════
+
+on:
+  schedule:
+    # Deliberately off the top of the hour: minute 0 is the most congested slot
+    # on GitHub's scheduler and gets delayed the most.
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+    inputs:
+      simulate_down:
+        description: "Simulate a failure to test the alert path end to end"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write     # the alert is a GitHub issue; that is what mails the owner
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest     # standard runner — no larger runner, no billing
+    steps:
+      # ⚠️ Two probes inside ONE run, not "one failure per run remembered across
+      #    runs". Cross-run state is fragile and a single blip must never page
+      #    anyone; two consecutive failures 60s apart is the actual signal.
+      - name: Probe twice
+        id: probe
+        env:
+          TARGET: ${{ secrets.WATCHDOG_URL }}
+          SIMULATE: ${{ inputs.simulate_down }}
+        run: |
+          probe() {
+            if [ "$SIMULATE" = "true" ]; then return 1; fi
+            curl -fsS --max-time 20 -o /dev/null "$TARGET" 2>/dev/null
+          }
+
+          if [ -z "$TARGET" ] && [ "$SIMULATE" != "true" ]; then
+            echo "::error::WATCHDOG_URL is not configured — the watchdog cannot see anything"
+            exit 1
+          fi
+
+          if probe; then
+            echo "first probe: healthy"
+            echo "state=up" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          echo "first probe failed — waiting 60s before confirming"
+          sleep 60
+
+          if probe; then
+            echo "second probe: healthy — first was a blip, not an outage"
+            echo "state=up" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          echo "second probe failed — two consecutive failures"
+          echo "state=down" >> "$GITHUB_OUTPUT"
+
+      # ⛔ Nothing below prints the target, the response body, or any error text
+      #    from curl. A public issue must not carry infrastructure detail.
+      - name: Open or update the alert
+        if: steps.probe.outputs.state == 'down'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+            --label watchdog --state open --limit 1 --json number --jq '.[0].number // empty')
+
+          WHEN=$(date -u '+%Y-%m-%d %H:%M UTC')
+          NOTE="@lucascarlosmeuads the external watchdog could not reach the monitored endpoint on two consecutive probes 60 seconds apart, at ${WHEN}.
+
+          Nothing here identifies the target — check the host directly."
+
+          if [ -n "$EXISTING" ]; then
+            # ⚠️ One issue for the whole outage. A new issue every 15 minutes
+            #    would be noise, and noise is how alerts get ignored.
+            gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" --body "$NOTE"
+            echo "updated existing alert #$EXISTING"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "External watchdog alert" \
+              --label watchdog \
+              --body "$NOTE"
+            echo "opened a new alert"
+          fi
+
+      - name: Close the alert on recovery
+        if: steps.probe.outputs.state == 'up'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+            --label watchdog --state open --limit 1 --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING" ]; then
+            WHEN=$(date -u '+%Y-%m-%d %H:%M UTC')
+            gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" \
+              --body "@lucascarlosmeuads the endpoint is reachable again as of ${WHEN}. Closing."
+            gh issue close "$EXISTING" --repo "$GITHUB_REPOSITORY"
+            echo "closed alert #$EXISTING"
+          else
+            echo "healthy, nothing open"
+          fi
